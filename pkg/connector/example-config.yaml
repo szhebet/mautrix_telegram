@@ -64,6 +64,34 @@ proxy:
     username:
     password:
 
+# Incoming message filter. Lets you drop (hide from Matrix) messages that you
+# consider spam, before they are sent to your Matrix rooms.
+message_filter:
+    # Master switch. When false, the filter below does nothing.
+    enabled: false
+    # Telegram user IDs whose messages are always dropped (both DMs and groups).
+    # You can find the numeric ID of a user via the /id Telegram command or logs.
+    blocked_senders: []
+    # Only used when block_unknown_dm_senders is true. Telegram user IDs that
+    # are allowed to send you direct messages.
+    allowed_senders: []
+    # Drop incoming direct messages from senders not in allowed_senders.
+    # Useful as an anti-spam measure for unsolicited DMs.
+    block_unknown_dm_senders: false
+    # Substrings. A message whose plain text contains any of these substrings
+    # (case-insensitive) is dropped. Empty list disables keyword filtering.
+    # Any entry wrapped in slashes (e.g. "/foo.*bar/") is treated as a regular
+    # expression. Regexes are matched against the lower-cased message text.
+    #
+    # Example: drop messages containing the words "спам" or "рассылка", plus a
+    # regex for short URLs like "bit.ly".
+    #
+    #   blocked_keywords:
+    #       - "спам"
+    #       - "рассылка"
+    #       - "/bit\.[a-z]{2,3}/[a-z0-9]+/"
+    blocked_keywords: []
+
 sync:
     # Number of most recently active dialogs to check when syncing chats.
     # Set to -1 to remove limit.

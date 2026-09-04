@@ -19,6 +19,7 @@ package connector
 import (
 	_ "embed"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
@@ -62,6 +63,30 @@ type ProxyConfig struct {
 	Password string `yaml:"password"`
 }
 
+type MessageFilterConfig struct {
+	// Enabled enables the incoming message filter. When enabled, messages
+	// matching the rules below are dropped before they are sent to Matrix.
+	Enabled bool `yaml:"enabled"`
+	// BlockedSenders is a list of Telegram user IDs whose messages are always
+	// dropped. This applies in both direct chats and groups.
+	BlockedSenders []int64 `yaml:"blocked_senders"`
+	// AllowedSenders is a list of Telegram user IDs that are allowed to send
+	// direct messages. Only used when BlockUnknownDMSenders is true.
+	AllowedSenders []int64 `yaml:"allowed_senders"`
+	// BlockUnknownDMSenders drops incoming direct messages from senders that
+	// are not in AllowedSenders. Useful as an anti-spam measure for DMs.
+	BlockUnknownDMSenders bool `yaml:"block_unknown_dm_senders"`
+	// BlockedKeywords is a list of substrings. A message whose plain text
+	// contains any of these substrings (case-insensitive) is dropped.
+	//
+	// Any entry wrapped in slashes (e.g. "/foo.*bar/") is treated as a regular
+	// expression instead of a plain substring. The regex is always matched
+	// against the lower-cased message text, so write your pattern accordingly.
+	BlockedKeywords []string `yaml:"blocked_keywords"`
+
+	blockedKeywordRegexps []*regexp.Regexp `yaml:"-"`
+}
+
 type TelegramConfig struct {
 	APIID   int    `yaml:"api_id"`
 	APIHash string `yaml:"api_hash"`
@@ -76,6 +101,8 @@ type TelegramConfig struct {
 	} `yaml:"ping"`
 
 	ProxyConfig ProxyConfig `yaml:"proxy"`
+
+	MessageFilter MessageFilterConfig `yaml:"message_filter"`
 
 	Sync struct {
 		UpdateLimit int  `yaml:"update_limit"`
@@ -146,7 +173,41 @@ func (c *TelegramConfig) UnmarshalYAML(node *yaml.Node) error {
 func (c *TelegramConfig) PostProcess() error {
 	var err error
 	c.displaynameTemplate, err = template.New("displayname").Parse(c.DisplaynameTemplate)
-	return err
+	if err != nil {
+		return err
+	}
+	return c.MessageFilter.compileRegexps()
+}
+
+// compileRegexps pre-compiles slash-wrapped entries of BlockedKeywords into
+// blockedKeywordRegexps. Returns an error if any regex fails to compile.
+func (c *MessageFilterConfig) compileRegexps() error {
+	c.blockedKeywordRegexps = nil
+	for _, kw := range c.BlockedKeywords {
+		re, ok, parseErr := parseKeywordRegexp(kw)
+		if parseErr != nil {
+			return fmt.Errorf("invalid regex in message_filter.blocked_keywords: %w", parseErr)
+		}
+		if ok {
+			c.blockedKeywordRegexps = append(c.blockedKeywordRegexps, re)
+		}
+	}
+	return nil
+}
+
+// parseKeywordRegexp treats an entry wrapped in slashes (e.g. "/foo.*bar/") as
+// a regular expression and returns the compiled regexp, otherwise it returns
+// ok=false for a plain substring match.
+func parseKeywordRegexp(entry string) (re *regexp.Regexp, ok bool, err error) {
+	if len(entry) >= 2 && strings.HasPrefix(entry, "/") && strings.HasSuffix(entry, "/") && !strings.HasSuffix(entry, "\\/") {
+		pattern := entry[1 : len(entry)-1]
+		compiled, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, false, err
+		}
+		return compiled, true, nil
+	}
+	return nil, false, nil
 }
 
 //go:embed example-config.yaml

@@ -233,6 +233,10 @@ func (tc *TelegramClient) onUpdateNewMessage(ctx context.Context, entities tg.En
 		}
 
 		topicID := tc.getTopicID(ctx, msg.PeerID, msg.ReplyTo)
+		if drop, reason := tc.shouldDropMessage(msg); drop {
+			log.Debug().Int("message_id", msg.GetID()).Str("reason", reason).Msg("Dropping message due to message filter")
+			return nil
+		}
 		res := tc.main.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[*tg.Message]{
 			EventMeta: simplevent.EventMeta{
 				Type: bridgev2.RemoteEventMessage,
