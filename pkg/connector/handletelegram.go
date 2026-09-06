@@ -1100,6 +1100,11 @@ func (tc *TelegramClient) onMessageEdit(ctx context.Context, update IGetMessage)
 		return nil
 	}
 
+	if drop, reason := tc.shouldDropMessage(msg); drop {
+		zerolog.Ctx(ctx).Debug().Int("message_id", msg.GetID()).Str("reason", reason).Msg("Dropping message edit due to message filter")
+		return nil
+	}
+
 	topicID := tc.getTopicID(ctx, msg.PeerID, msg.ReplyTo)
 	// Channels don't use edits to signal reactions, and when sending the first reaction they send a no-op edit
 	// with an empty reactions list, which would confuse the handle method. Therefore, just don't sync reactions

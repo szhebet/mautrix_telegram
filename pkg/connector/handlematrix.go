@@ -47,7 +47,6 @@ import (
 	"go.mau.fi/webp"
 	"golang.org/x/exp/maps"
 	_ "golang.org/x/image/webp"
-	"golang.org/x/net/html"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -167,62 +166,13 @@ func (tc *TelegramClient) pollSponsoredMessage(ctx context.Context, portal *brid
 		msg = msgs.Messages[1]
 	}
 	meta.SponsoredMessageRandomID = msg.RandomID
-	content := tc.parseBodyAndHTML(ctx, msg.Message, msg.Entities)
-	content.MsgType = event.MsgNotice
-	content.EnsureHasHTML()
-	extra := map[string]any{
-		"external_url": msg.URL,
-		"fi.mau.telegram.sponsored": map[string]any{
-			"random_id":       msg.RandomID,
-			"url":             msg.URL,
-			"button_text":     msg.ButtonText,
-			"title":           msg.Title,
-			"content":         content.FormattedBody,
-			"sponsor_info":    msg.SponsorInfo,
-			"additional_info": msg.AdditionalInfo,
-			"recommended":     msg.Recommended,
-		},
-	}
-	var fromStr string
-	if msg.SponsorInfo != "" {
-		fromStr = fmt.Sprintf(" from %s", html.EscapeString(msg.SponsorInfo))
-	}
-	prefix := "Ad"
-	if msg.Recommended {
-		prefix = "Recommended"
-	}
-	content.FormattedBody = fmt.Sprintf(
-		`<strong>%s: %s</strong><blockquote>%s</blockquote><p>Sponsored message%s - <a href="%s">%s</a></p>`,
-		prefix, html.EscapeString(msg.Title), content.FormattedBody, fromStr, msg.URL, msg.ButtonText,
-	)
-	sendResp, err := tc.main.Bridge.Bot.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{
-		Raw:    extra,
-		Parsed: content,
-	}, &bridgev2.MatrixSendExtra{Timestamp: time.Now()})
-	if err != nil {
-		return fmt.Errorf("failed to send sponsored message: %w", err)
-	}
-	oldSponsoredMessageMXID := meta.SponsoredMessageEventID
-	if oldSponsoredMessageMXID != "" {
-		_, err = tc.main.Bridge.Bot.SendMessage(ctx, portal.MXID, event.EventRedaction, &event.Content{
-			Parsed: &event.RedactionEventContent{
-				Reason:                "new sponsored message sent",
-				Redacts:               oldSponsoredMessageMXID,
-				DontRenderPlaceholder: true,
-			},
-		}, &bridgev2.MatrixSendExtra{Timestamp: time.Now()})
-		if err != nil {
-			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to redact old sponsored message after sending new one")
-		}
-	}
-	meta.SponsoredMessageEventID = sendResp.EventID
 	zerolog.Ctx(ctx).Debug().
-		Stringer("event_id", sendResp.EventID).
 		Str("random_id", base64.StdEncoding.EncodeToString(msg.RandomID)).
-		Msg("Sent sponsored message to Matrix")
+		Str("title", msg.Title).
+		Msg("Skipping sponsored message, not bridging ads to Matrix")
 	err = portal.Save(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to save portal after sending sponsored messages: %w", err)
+		return fmt.Errorf("failed to save portal after polling sponsored messages: %w", err)
 	}
 	return nil
 }
