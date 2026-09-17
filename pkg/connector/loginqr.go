@@ -74,15 +74,28 @@ func (ql *QRLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 		return nil, err
 	}
 
-	ql.qrToken = make(chan qrlogin.Token)
-	ql.auth = make(chan qrAuthResult)
+	// qrToken is buffered (capacity 1) so QR renewals never block on an
+	// unread token, and the sends below are additionally guarded by
+	// ql.ctx.Done(). Together this prevents goroutine leaks: Start()/Wait()
+	// return early as soon as ctx is cancelled, so an unguarded send to an
+	// unbuffered channel would block forever once the QR auth finally
+	// produces its token or result.
+	ql.qrToken = make(chan qrlogin.Token, 1)
+	ql.auth = make(chan qrAuthResult, 1)
 	go func() {
 		auth, err := ql.client.QR().Auth(ql.ctx, loggedIn, func(ctx context.Context, token qrlogin.Token) error {
-			ql.qrToken <- token
-			return nil
+			select {
+			case ql.qrToken <- token:
+				return nil
+			case <-ql.ctx.Done():
+				return ql.ctx.Err()
+			}
 		})
 
-		ql.auth <- qrAuthResult{auth, err}
+		select {
+		case ql.auth <- qrAuthResult{auth, err}:
+		case <-ql.ctx.Done():
+		}
 	}()
 
 	// Wait for the first QR token and show it to the user.:

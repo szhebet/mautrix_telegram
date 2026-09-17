@@ -929,6 +929,10 @@ func (tc *TelegramClient) onUpdateWrapper(ctx context.Context, e tg.Entities, up
 				})
 			}
 			return err
+		case <-ctx.Done():
+			// Unblock the dispatcher if the connection is torn down while the
+			// update handler is still running, instead of waiting forever.
+			return ctx.Err()
 		}
 	}
 }

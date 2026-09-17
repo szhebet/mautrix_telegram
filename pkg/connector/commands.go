@@ -18,14 +18,17 @@ package connector
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 
 	"go.mau.fi/mautrix-telegram/pkg/connector/ids"
@@ -287,5 +290,113 @@ func fnEmojiPack(ce *commands.Event) {
 		client.fnDownloadEmojiPack(ce)
 	default:
 		ce.Reply("Usage: `$cmdprefix emoji-pack <upload/download/list/help> [args...]`")
+	}
+}
+
+var cmdLostPortals = &commands.FullHandler{
+	Func: fnLostPortals,
+	Name: "lost-portals",
+	Aliases: []string{
+		"lost",
+		"cleanup-lost-portals",
+	},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Find portals whose Matrix room no longer exists on the homeserver",
+		Args:        "[--delete] [login ID...]",
+	},
+	RequiresLogin: true,
+}
+
+func fnLostPortals(ce *commands.Event) {
+	deletePortals := false
+	if argIdx := slices.Index(ce.Args, "--delete"); argIdx >= 0 {
+		deletePortals = true
+		ce.Args = slices.Delete(ce.Args, argIdx, argIdx+1)
+	}
+
+	logins := ce.User.GetUserLogins()
+	if len(ce.Args) > 0 {
+		logins = slices.DeleteFunc(logins, func(login *bridgev2.UserLogin) bool {
+			return !slices.Contains(ce.Args, string(login.ID))
+		})
+		if len(logins) == 0 {
+			ce.Reply("No matching logins found with provided ID(s)")
+			return
+		}
+	}
+
+	// This deliberately uses the bridge bot's state query (a direct homeserver
+	// call) instead of the cached state store: the store keeps the m.room.create
+	// event even after the room was deleted from Synapse, so stale cached state
+	// would make lost portals look like they still exist.
+	stateAPI, ok := ce.Bot.(bridgev2.MatrixAPIWithArbitraryRoomState)
+	if !ok {
+		ce.Reply("The Matrix layer doesn't support checking room state")
+		return
+	}
+
+	var lost []*bridgev2.Portal
+	seen := make(map[networkid.PortalKey]struct{})
+	for _, login := range logins {
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Log.Err(err).Str("login_id", string(login.ID)).Msg("Failed to get portals for login")
+			ce.Reply("Failed to get portals for %s: %v", format.SafeMarkdownCode(login.ID), err)
+			continue
+		}
+		for _, up := range userPortals {
+			if _, alreadySeen := seen[up.Portal]; alreadySeen {
+				continue
+			}
+			seen[up.Portal] = struct{}{}
+			portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, up.Portal)
+			if err != nil {
+				ce.Log.Err(err).Object("portal_key", up.Portal).Msg("Failed to load portal")
+				continue
+			} else if portal == nil || portal.MXID == "" {
+				continue
+			}
+			_, err = stateAPI.GetStateEvent(ce.Ctx, portal.MXID, event.StateCreate, "")
+			if err == nil {
+				continue
+			} else if errors.Is(err, mautrix.MNotFound) || errors.Is(err, mautrix.MForbidden) {
+				// The room was deleted from the homeserver and the portal still
+				// points at it, or the bridge bot can no longer access it at
+				// all. Synapse returns M_FORBIDDEN "not in room" (instead of
+				// M_NOT_FOUND) for unknown rooms when room previews are
+				// disabled, so both codes mean the portal can't be used. Since
+				// portal rooms are created by (and joined by) the bridge bot,
+				// either case is a lost portal.
+				lost = append(lost, portal)
+			} else {
+				// Transient errors don't mean the room is gone, so they are
+				// skipped instead of being treated as lost.
+				ce.Log.Warn().Err(err).Stringer("room_id", portal.MXID).Msg("Failed to check whether room still exists")
+			}
+		}
+	}
+
+	if len(lost) == 0 {
+		ce.Reply("No lost portals found.")
+		return
+	}
+
+	lines := make([]string, len(lost))
+	for i, portal := range lost {
+		lines[i] = fmt.Sprintf("* %s `%s`", format.SafeMarkdownCode(portal.Name), portal.MXID)
+	}
+	if deletePortals {
+		deleted := 0
+		for _, portal := range lost {
+			if err := portal.Delete(ce.Ctx); err != nil {
+				ce.Reply("Failed to delete portal %s: %v", portal.MXID, err)
+				continue
+			}
+			deleted++
+		}
+		ce.Reply("%s", fmt.Sprintf("Found %d lost portal(s), deleted %d:\n%s", len(lost), deleted, strings.Join(lines, "\n")))
+	} else {
+		ce.Reply("%s", fmt.Sprintf("Found %d lost portal(s) (add `--delete` to remove them):\n%s", len(lost), strings.Join(lines, "\n")))
 	}
 }
